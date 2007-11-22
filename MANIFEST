@@ -22,6 +22,5 @@ lib/Catalyst/Action/SOAP/DocumentLiteral.pm
 lib/Catalyst/Action/SOAP/HTTPGet.pm
 lib/Catalyst/Action/SOAP/RPCEndpoint.pm
 lib/Catalyst/Action/SOAP/RPCLiteral.pm
-lib/Catalyst/Action/SOAP/RPCEncoded.pm
 lib/Catalyst/Controller/SOAP.pm
 lib/Catalyst/Controller/SOAP/RPC.pm
