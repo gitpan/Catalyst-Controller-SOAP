@@ -1,5 +1,6 @@
 { package Catalyst::Action::SOAP::RPCEndpoint;
 
+  use strict;
   use base qw/Catalyst::Action::SOAP/;
   use constant NS_SOAP_ENV => "http://schemas.xmlsoap.org/soap/envelope/";
   use UNIVERSAL;
@@ -21,7 +22,8 @@
                    reason => 'Bad Body', detail =>
                    'RPC messages should contain only one element inside body'})
             } else {
-                my ($smthing, $operation) = split /:/, $children[0]->nodeName();
+                my $rpc_element = $children[0];
+                my ($smthing, $operation) = split /:/, $rpc_element->nodeName();
                 $operation ||= $smthing; # if there's no ns prefix,
                                          # operation is the first
                                          # part.
@@ -30,10 +32,10 @@
                 eval {
                     if ($controller->wsdlobj) {
                         my $decoder = $controller->decoders->{$operation};
-                        my ($args) = $decoder->($children[0]);
+                        my ($args) = $decoder->($rpc_element);
                         $c->stash->{soap}->arguments($args);
                     } else {
-                        my $arguments = $children[0]->getChildNodes();
+                        my $arguments = $rpc_element->getChildNodes();
                         $c->stash->{soap}->arguments($arguments);
                     }
                 };
