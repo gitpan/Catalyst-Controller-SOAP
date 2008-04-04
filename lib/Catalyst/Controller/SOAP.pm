@@ -7,18 +7,45 @@
     use UNIVERSAL qw(isa);
 
     use constant NS_SOAP_ENV => "http://schemas.xmlsoap.org/soap/envelope/";
+    use constant NS_WSDLSOAP => "http://schemas.xmlsoap.org/wsdl/soap/";
 
-    our $VERSION = '0.6';
+    our $VERSION = '0.7';
 
-    __PACKAGE__->mk_accessors qw(wsdlobj decoders encoders);
+    __PACKAGE__->mk_accessors qw(wsdl wsdlobj decoders encoders
+         ports wsdlservice xml_compile soap_action_prefix rpc_endpoint_paths);
 
-    sub _parse_SOAP_attr {
-        my ($self, $c, $name, $value) = @_;
+    # XXX - This is here as a temporary fix for a bug in _parse_attrs
+    # that makes it impossible to return more than one
+    # "final_attribute", a patch was already submitted and should make
+    # into the next release.
+    sub _parse_attrs {
+        my ( $self, $c, $name, @attrs ) = @_;
 
-        my $wsdlfile = $self->config->{wsdl};
-        my $compile_opts = $self->config->{xml_compile} || {};
-        $compile_opts->{reader} ||= {};
-        $compile_opts->{writer} ||= {};
+        my @others = grep { $_ !~ /^WSDLPort/ } @attrs;
+        my $final = $self->SUPER::_parse_attrs($c, $name, @others);
+
+        my ($attr) = grep { $_ && $_ =~ /^WSDLPort/ } @attrs;
+        return $final unless $attr;
+
+        if ( my ( $key, $value ) = ( $attr =~ /^(.*?)(?:\(\s*(.+?)\s*\))?$/ ) )
+        {
+            if ( defined $value ) {
+                ( $value =~ s/^'(.*)'$/$1/ ) || ( $value =~ s/^"(.*)"/$1/ );
+            }
+            my %ret = $self->_parse_WSDLPort_attr($c, $name, $value);
+            push( @{ $final->{$_} }, $ret{$_} ) for
+              keys %ret;
+        }
+
+
+        return $final;
+    }
+
+
+    sub __init_wsdlobj {
+        my ($self, $c) = @_;
+
+        my $wsdlfile = $self->wsdl;
 
         if ($wsdlfile) {
             if (!$self->wsdlobj) {
@@ -42,8 +69,94 @@
                     $self->wsdlobj->importDefinitions($schema)
                 }
             }
+        }
 
-            my $operation = $self->wsdlobj->operation($name)
+        return $self->wsdlobj ? 1 : 0;
+    }
+
+    sub _parse_WSDLPort_attr {
+        my ($self, $c, $name, $value) = @_;
+
+        die 'Cannot use WSDLPort without WSDL.'
+          unless $self->__init_wsdlobj;
+
+        $self->ports({}) unless $self->ports();
+        $self->ports->{$name} = $value;
+        my $operation = $self->wsdlobj->operation($name,
+                                                  port => $value,
+                                                  service => $self->wsdlservice)
+          or die 'Every operation should be on the WSDL when using one.';
+
+        # TODO: Use more intelligence when selecting the address.
+        my ($path) = $operation->endPointAddresses();
+
+        $path =~ s#^[^:]+://[^/]+##;
+
+        # Finding out the style and input body use for this operation
+        my $binding = $self->wsdlobj->find(binding => $operation->port->{binding});
+        my $style = $binding->{'{'.NS_WSDLSOAP.'}binding'}[0]->getAttribute('style');
+        my ($use) = map { $_->{input}{'{'.NS_WSDLSOAP.'}body'}[0]->getAttribute('use') }
+          grep { $_->{name} eq $name } @{ $binding->{operation} || [] };
+
+        $style = $style =~ /document/i ? 'Document' : 'RPC';
+        $use = $use =~ /literal/i ? 'Literal' : 'Encoded';
+
+        if ($style eq 'Document') {
+            return
+              (
+               Path => $path,
+               $self->_parse_SOAP_attr($c, $name, $style.$use)
+              );
+        } else {
+            $self->rpc_endpoint_paths([]) unless $self->rpc_endpoint_paths;
+            $path =~ s/\/$//;
+            push @{$self->rpc_endpoint_paths}, $path
+              unless grep { $_ eq $path }
+                @{$self->rpc_endpoint_paths};
+            return $self->_parse_SOAP_attr($c, $name, $style.$use)
+        }
+    }
+
+    # Let's create the rpc_endpoint action.
+    sub register_actions {
+        my $self = shift;
+        my ($c) = @_;
+        $self->SUPER::register_actions(@_);
+
+        if ($self->rpc_endpoint_paths) {
+            my $namespace = $self->action_namespace($c);
+            my $action = $self->create_action
+              (
+               name => '___base_rpc_endpoint',
+               code => sub { },
+               reverse => ($namespace ? $namespace.'/' : '') . '___base_rpc_endpoint',
+               namespace => $namespace,
+               class => (ref $self || $self),
+               attributes => { ActionClass => [ 'Catalyst::Action::SOAP::RPCEndpoint' ],
+                               Path => $self->rpc_endpoint_paths }
+              );
+            $c->dispatcher->register($c, $action);
+        }
+    }
+
+    sub _parse_SOAP_attr {
+        my ($self, $c, $name, $value) = @_;
+
+        my $wsdlfile = $self->wsdl;
+        my $wsdlservice = $self->wsdlservice;
+        my $compile_opts = $self->xml_compile || {};
+        $compile_opts->{reader} ||= {};
+        $compile_opts->{writer} ||= {};
+
+        if ($wsdlfile) {
+
+            die 'WSDL initialization failed.'
+              unless $self->__init_wsdlobj;
+
+            $self->ports({}) unless $self->ports();
+            my $operation = $self->wsdlobj->operation($name,
+                                                      port => $self->ports->{$name},
+                                                      service => $wsdlservice)
               or die 'Every operation should be on the WSDL when using one.';
             my $portop = $operation->portOperation();
 
@@ -210,6 +323,7 @@
 
 };
 
+
 1;
 
 __END__
@@ -222,6 +336,15 @@ Catalyst::Controller::SOAP - Catalyst SOAP Controller
 
     package MyApp::Controller::Example;
     use base 'Catalyst::Controller::SOAP';
+
+    # When using a WSDL, you can just specify the Port name, and it
+    # will infer the style and use. To do that, you just need to use
+    # the WSDLPort attribute. This might be required if your service
+    # has more than one port.  This operation will be made available
+    # using the path part of the location attribute of the port
+    # definition.
+    __PACKAGE__->config->{wsdl} = 'file.wsdl';
+    sub servicefoo : WSDLPort('ServicePort') {}
 
     # available in "/example" as operation "ping". The arguments are
     # treated as a literal document and passed to the method as a
@@ -250,6 +373,7 @@ Catalyst::Controller::SOAP - Catalyst SOAP Controller
     # dispatched. This code won't be executed at all.
     # See Catalyst::Controller::SOAP::RPC.
     sub index :Local SOAP('RPCEndpoint') {}
+
 
 =head1 ABSTACT
 
@@ -330,11 +454,10 @@ message.
 
 =head1 USING WSDL
 
-If you define "wsdl" as a configuration key,
-Catalyst::Controller::SOAP will automatically map your operations into
-the WSDL operations, in which case you will receive the parsed Perl
-structure as returned by XML::Compile according to the type defined in
-the WSDL message.
+If you define the "wsdl" configuration key, Catalyst::Controller::SOAP
+will automatically map your operations into the WSDL operations, in
+which case you will receive the parsed Perl structure as returned by
+XML::Compile according to the type defined in the WSDL message.
 
 You can define additional wsdl files or even additional schema
 files. If $wsdl is an arrayref, the first element is the one passed to
@@ -344,11 +467,39 @@ the "schema" key will be used to importDefinitions. If the content of
 the schema key is an arrayref, it will result in several calls to
 importDefinition.
 
-Also, when using wsdl, you can also define the response using
+When using WSDL, you can use the WSDLPort attribute, that not only
+sets the port name but also infer which is the style of the binding,
+the use of the input body and also declares the Path for the operation
+according to the 'location' attribute in the WSDL file. For RPC
+operations, the endpoint action will be created dinamically also in
+the path defined by the WSDL file.
 
-=over
+This is the most convenient way of defining a SOAP service, which, in
+the end, will require you to have it as simple as:
 
-=item $c->stash->{soap}->compile_return($perl_structure)
+  package SOAPApp::Controller::WithWSDL;
+  use base 'Catalyst::Controller::SOAP';
+  __PACKAGE__->config->{wsdl} = 't/hello4.wsdl';
+  
+  # in this case, the input has two parts, named 'who' and 'greeting'
+  # and the output has a single 'greeting' part.
+  sub Greet : WSDLPort('Greet') {
+    my ( $self, $c, $args ) = @_;
+    my $who = $args->{who};
+    my $grt = $args->{greeting};
+    $c->stash->{soap}->compile_return({ greeting => $grt.' '.$who.'!' });
+  }
+
+When using WSDL with more than one port, the use of this attribute is
+mandatory.
+
+When the WSDL describes more than one service, the controller can only
+represent one of them, so you must define the 'wsdlservice' config key
+that will be used to select the service.
+
+Also, when using wsdl, you can define the response using:
+
+  $c->stash->{soap}->compile_return($perl_structure)
 
 In this case, the given structure will be transformed by XML::Compile,
 according to what's described in the WSDL file.
@@ -358,12 +509,10 @@ hashref with keys 'reader' and 'writer', which both have a hashref
 as their value), those key / value pairs will be passed as options
 to the XML::Compile::Schema::compile() method.
 
-    __PACKAGE__->config->{xml_compile} = {
-        reader => {sloppy_integers => 1},
-        writer => {sloppy_integers => 1},
-    };
+  __PACKAGE__->config->{xml_compile} = {
+      reader => {sloppy_integers =>     writer => {sloppy_integers => 1},
+  };
 
-=back
 
 =head1 TODO
 
@@ -389,6 +538,7 @@ L<XML::Compile::Schema>
 =head1 AUTHORS
 
 Daniel Ruoso C<daniel.ruoso@verticalone.pt>
+Drew Taylor C<drew@drewtaylor.com>
 
 =head1 BUG REPORTS
 
