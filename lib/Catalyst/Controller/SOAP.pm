@@ -9,7 +9,7 @@
     use constant NS_SOAP_ENV => "http://schemas.xmlsoap.org/soap/envelope/";
     use constant NS_WSDLSOAP => "http://schemas.xmlsoap.org/wsdl/soap/";
 
-    our $VERSION = '0.8';
+    our $VERSION = '0.9';
 
     __PACKAGE__->mk_accessors qw(wsdl wsdlobj decoders encoders
          ports wsdlservice xml_compile soap_action_prefix rpc_endpoint_paths);
@@ -57,15 +57,24 @@
 
                 if (ref $wsdlfile eq 'ARRAY') {
                     my $main = shift @{$wsdlfile};
+                    $c->log->debug("WSDL: adding main WSDL $main");
                     $self->wsdlobj(XML::Compile::WSDL11->new($main));
-                    $self->wsdlobj->addWSDL($_) for @{$wsdlfile};
+                    foreach my $file (@{$wsdlfile}) {
+                        $c->log->debug("WSDL: adding additional WSDL $file");
+                        $self->wsdlobj->addWSDL($file);
+                    }
                 } else {
+                    $c->log->debug("WSDL: adding WSDL $wsdlfile");
                     $self->wsdlobj(XML::Compile::WSDL11->new($wsdlfile));
                 }
 
                 if (ref $schema eq 'ARRAY') {
-                    $self->wsdlobj->importDefinitions($_) for @{$schema};
+                    foreach my $file (@$schema) {
+                        $c->log->debug("WSDL: Import schema $file");
+                        $self->wsdlobj->importDefinitions($file);
+                    }
                 } elsif ($schema) {
+                    $c->log->debug("WSDL: Import schema $schema");
                     $self->wsdlobj->importDefinitions($schema)
                 }
             }
@@ -78,7 +87,7 @@
         my ($self, $c, $name, $value) = @_;
 
         die 'Cannot use WSDLPort without WSDL.'
-          unless $self->__init_wsdlobj;
+          unless $self->__init_wsdlobj($c);
 
         $self->ports({}) unless $self->ports();
         $self->ports->{$name} = $value;
@@ -100,6 +109,7 @@
 
         $style = $style =~ /document/i ? 'Document' : 'RPC';
         $use = $use =~ /literal/i ? 'Literal' : 'Encoded';
+        $c->log->debug("WSDLPort: [$name] [$value] [$path] [$style] [$use]");
 
         if ($style eq 'Document') {
             return
@@ -142,16 +152,16 @@
     sub _parse_SOAP_attr {
         my ($self, $c, $name, $value) = @_;
 
-        my $wsdlfile = $self->wsdl;
-        my $wsdlservice = $self->wsdlservice;
+        my $wsdlfile     = $self->wsdl;
+        my $wsdlservice  = $self->wsdlservice;
         my $compile_opts = $self->xml_compile || {};
-        $compile_opts->{reader} ||= {};
-        $compile_opts->{writer} ||= {};
+        my $reader_opts  = $compile_opts->{reader} || {};
+        my $writer_opts  = $compile_opts->{writer} || {};
 
         if ($wsdlfile) {
 
             die 'WSDL initialization failed.'
-              unless $self->__init_wsdlobj;
+              unless $self->__init_wsdlobj($c);
 
             $self->ports({}) unless $self->ports();
             my $operation = $self->wsdlobj->operation($name,
@@ -159,11 +169,17 @@
                                                       service => $wsdlservice)
               or die 'Every operation should be on the WSDL when using one.';
             my $portop = $operation->portOperation();
+            $c->log->debug("SOAP: @{[$operation->name]} $portop->{input}{message} $portop->{output}{message}");
 
             my $input_parts = $self->wsdlobj->find(message => $portop->{input}{message})
               ->{part};
-            $_->{compiled} = $self->wsdlobj->schemas->compile(READER => $_->{element}, %{$compile_opts->{reader}})
-              for @{$input_parts};
+            for (@{$input_parts}) {
+                my $type = $_->{type} ? $_->{type} : $_->{element};
+                $c->log->debug("SOAP: @{[$operation->name]} input part $_->{name}, type $type");
+                $_->{compiled_reader} = $self->wsdlobj->schemas->compile
+                  (READER => $type,
+                   %$reader_opts);
+            };
 
             $self->decoders({}) unless $self->decoders();
             $self->decoders->{$name} = sub {
@@ -172,7 +188,7 @@
                 return
                   {
                    map {
-                       my $data = $_->{compiled}->(shift @nodes);
+                       my $data = $_->{compiled_reader}->(shift @nodes);
                        $_->{name} => $data;
                    } @{$input_parts}
                   }, @nodes;
@@ -180,8 +196,14 @@
 
             my $output_parts = $self->wsdlobj->find(message => $portop->{output}{message})
               ->{part};
-            $_->{compiled} = $self->wsdlobj->schemas->compile(WRITER => $_->{element}, %{$compile_opts->{writer}})
-              for @{$output_parts};
+            for (@{$output_parts}) {
+                my $type = $_->{type} ? $_->{type} : $_->{element};
+                $c->log->debug("SOAP: @{[$operation->name]} out part $_->{name}, type $type");
+                $_->{compiled_writer} = $self->wsdlobj->schemas->compile
+                  (WRITER => $_->{type} ? $_->{type} : $_->{element},
+                   elements_qualified => 'ALL',
+                   %$writer_opts);
+            }
 
             $self->encoders({}) unless $self->encoders();
             $self->encoders->{$name} = sub {
@@ -189,7 +211,7 @@
                 return
                   [
                    map {
-                       $_->{compiled}->($doc, $data->{$_->{name}})
+                       $_->{compiled_writer}->($doc, $data->{$_->{name}})
                    } @{$output_parts}
                   ];
             };
@@ -212,62 +234,68 @@
 
         if (scalar @{$c->error}) {
             $c->stash->{soap}->fault
-              ({ code => [ 'env:Sender' ],
+              ({ code => 'Client',
                  reason => 'Unexpected Error', detail =>
                  'Unexpected error in the application: '.(join "\n", @{$c->error} ).'!'});
             $c->error(0);
         }
 
         my $namespace = $soap->namespace || NS_SOAP_ENV;
-        my $response = XML::LibXML->createDocument();
+        my $response = XML::LibXML->createDocument('1.0','UTF8');
 
         my $envelope = $response->createElementNS
-          ($namespace,"Envelope");
+          ($namespace,"SOAPENV:Envelope");
 
         $response->setDocumentElement($envelope);
 
         # TODO: we don't support header generation in response yet.
 
         my $body = $response->createElementNS
-          ($namespace,"Body");
+          ($namespace,"SOAPENV:Body");
 
         $envelope->appendChild($body);
 
         if ($soap->fault) {
             my $fault = $response->createElementNS
-              ($namespace, "Fault");
+              ($namespace, "SOAPENV:Fault");
             $body->appendChild($fault);
 
             my $code = $response->createElementNS
-              ($namespace, "Code");
+              ($namespace, "SOAPENV:faultcode");
             $fault->appendChild($code);
-
-            $self->_generate_Fault_Code($response,$code,$soap->fault->{code}, $namespace);
-
-            if ($soap->fault->{reason}) {
-                my $reason = $response->createElementNS
-                  ($namespace, "Reason");
-                $fault->appendChild($reason);
-                # TODO: we don't support the xml:lang attribute yet.
-                my $text = $response->createElementNS
-                  ($namespace, "Text");
-                $reason->appendChild($text);
-                $text->appendText($soap->fault->{reason});
+            my $codestr = $soap->fault->{code};
+            if (my ($ns, $val) = $codestr =~ m/^\{(.+)\}(.+)$/) {
+                my $prefix = $code->lookupNamespacePrefix($ns);
+                if ($prefix) {
+                    $code->appendText($prefix.':'.$val);
+                } else {
+                    $code->appendText($val);
+                }
+            } else {
+                $code->appendText('SOAPENV:'.$codestr);
             }
-            if ($soap->fault->{detail}) {
+
+            my $faultstring = $response->createElementNS
+              ($namespace, "SOAPENV:faultstring");
+            $fault->appendChild($faultstring);
+            $faultstring->appendText($soap->fault->{reason});
+
+            if (UNIVERSAL::isa($soap->fault->{detail}, 'XML::LibXML::Node')) {
                 my $detail = $response->createElementNS
-                  ($namespace, "Detail");
+                  ($namespace, "SOAPENV:detail");
+                $detail->appendChild($soap->fault->{detail});
+                $fault->appendChild($detail);
+            } elsif ($soap->fault->{detail}) {
+                my $detail = $response->createElementNS
+                  ($namespace, "SOAPENV:detail");
                 $fault->appendChild($detail);
                 # TODO: we don't support the xml:lang attribute yet.
                 my $text = $response->createElementNS
-                  ($namespace, "Text");
+                  ('http://www.w3.org/2001/XMLSchema','xsd:documentation');
                 $detail->appendChild($text);
                 $text->appendText($soap->fault->{detail});
             }
         } else {
-            # TODO: Generate the body.
-            # At this moment, for the sake of getting something ready,
-            # let's implement the string return.
             if ($soap->string_return) {
                 $body->appendText($soap->string_return);
             } elsif (my $lit = $soap->literal_return) {
@@ -283,30 +311,13 @@
                   unless $self->wsdlobj;
 
                 my $arr = $self->encoders->{$soap->operation_name}->($response, $cmp);
-                $body->appendChild($_) for @{$arr};
+                $body->appendChild($_) for @$arr;
             }
         }
 
+        $c->log->debug("Outgoing XML: ".$envelope->toString());
         $c->res->content_type('text/xml');
         $c->res->body($envelope->toString());
-    }
-
-    sub _generate_Fault_Code {
-        my ($self, $document, $codenode, $codeValue, $namespace) = @_;
-
-        my $value = $document->createElementNS
-          ($namespace, "Value");
-        if (ref $codeValue eq 'ARRAY') {
-            $value->appendText($codeValue->[0]);
-            my $subcode = $document->createElementNS
-              ($namespace, 'SubCode');
-            $codenode->appendChild($value);
-            $codenode->appendChild($subcode);
-            $self->_generate_Fault_Code($document, $subcode, $codeValue->[1], $namespace);
-        } else {
-            $value->appendText($codeValue) if $codeValue;
-            $codenode->appendChild($value);
-        }
     }
 
 
@@ -510,8 +521,42 @@ as their value), those key / value pairs will be passed as options
 to the XML::Compile::Schema::compile() method.
 
   __PACKAGE__->config->{xml_compile} = {
-      reader => {sloppy_integers =>     writer => {sloppy_integers => 1},
+      reader => {sloppy_integers => 1}, writer => {sloppy_integers => 1},
   };
+
+=head1 USING WSDL AND Catalyst::Test
+
+If you'd like to use the built-in server from Catalyst::Test with your
+WSDL file (which likely defines an <address location="..."> that differs
+from the standard test server) you'll need to use the transport_hook
+option available with $wsdl->compileClient() in your test file.
+
+
+    # t/soap_message.t
+    use XML::Compile::WSDL11;
+    use XML::Compile::Transport::SOAPHTTP;
+    use Test::More qw(no_plan);
+
+    BEGIN {
+        use_ok 'Catalyst::Test', 'MyServer';
+    }
+
+    sub proxy_to_test_app
+    {
+        my ($request, $trace) = @_;
+        # request() is a function inserted by Catalyst::Test which
+        # sends HTTP requests to the just-started test server.
+        return request($request);
+    }
+
+    my $xml       = '/path/to/wsdl/file';
+    my $message   = 'YourMessage';
+    my $port_name = 'YourPort';
+    my $wsdl      = XML::Compile::WSDL11->new($xml);
+    my $client    = $wsdl->compileClient($message, 
+        port => $port_name, transport_hook => \&proxy_to_test_app,
+    );
+    $client->(...);
 
 
 =head1 TODO
@@ -538,6 +583,7 @@ L<XML::Compile::Schema>
 =head1 AUTHORS
 
 Daniel Ruoso C<daniel.ruoso@verticalone.pt>
+
 Drew Taylor C<drew@drewtaylor.com>
 
 =head1 BUG REPORTS

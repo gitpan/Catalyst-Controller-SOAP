@@ -23,16 +23,17 @@
       if ($c->req->content_type =~ /xml/ &&
           $c->req->method eq 'POST') {
           my $body = $c->req->body;
-          my $xml_str = join '', <$body>;
+          my $xml_str = ref $body ? (join '', <$body>) : $body;
+          $c->log->debug("Incoming XML: $xml_str");
           eval {
               $c->stash->{soap}->envelope($xml_str);
               $c->stash->{soap}->parsed_envelope($self->xml_parser->parse_string($xml_str));
           };
           if ($@) {
-              $c->stash->{soap}->fault({ code => 'env:Sender', reason => 'Bad XML Message', detail => $@});
+              $c->stash->{soap}->fault({ code => 'Client', reason => 'Bad XML Message', detail => $@});
           }
       } else {
-          $c->stash->{soap}->fault({ code => 'env:Sender', reason => 'Bad content-type/method'});
+          $c->stash->{soap}->fault({ code => 'Client', reason => 'Bad content-type/method'});
       }
   }
 };
