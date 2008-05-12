@@ -5,11 +5,12 @@
     use XML::LibXML;
     use XML::Compile::WSDL11;
     use UNIVERSAL qw(isa);
+    use Class::C3;
 
     use constant NS_SOAP_ENV => "http://schemas.xmlsoap.org/soap/envelope/";
     use constant NS_WSDLSOAP => "http://schemas.xmlsoap.org/wsdl/soap/";
 
-    our $VERSION = '0.9';
+    our $VERSION = '0.10';
 
     __PACKAGE__->mk_accessors qw(wsdl wsdlobj decoders encoders
          ports wsdlservice xml_compile soap_action_prefix rpc_endpoint_paths);
@@ -21,24 +22,49 @@
     sub _parse_attrs {
         my ( $self, $c, $name, @attrs ) = @_;
 
-        my @others = grep { $_ !~ /^WSDLPort/ } @attrs;
-        my $final = $self->SUPER::_parse_attrs($c, $name, @others);
+        my %raw_attributes;
 
-        my ($attr) = grep { $_ && $_ =~ /^WSDLPort/ } @attrs;
-        return $final unless $attr;
+        foreach my $attr (@attrs) {
 
-        if ( my ( $key, $value ) = ( $attr =~ /^(.*?)(?:\(\s*(.+?)\s*\))?$/ ) )
-        {
-            if ( defined $value ) {
-                ( $value =~ s/^'(.*)'$/$1/ ) || ( $value =~ s/^"(.*)"/$1/ );
+            # Parse out :Foo(bar) into Foo => bar etc (and arrayify)
+
+            if ( my ( $key, $value ) = ( $attr =~ /^(.*?)(?:\(\s*(.+?)\s*\))?$/ ) ) {
+
+                if ( defined $value ) {
+                    ( $value =~ s/^'(.*)'$/$1/ ) || ( $value =~ s/^"(.*)"/$1/ );
+                }
+                push( @{ $raw_attributes{$key} }, $value );
             }
-            my %ret = $self->_parse_WSDLPort_attr($c, $name, $value);
-            push( @{ $final->{$_} }, $ret{$_} ) for
-              keys %ret;
         }
 
+        my $hash = (ref $self ? $self : $self->config); # hate app-is-class
 
-        return $final;
+        if (exists $hash->{actions} || exists $hash->{action}) {
+            my $a = $hash->{actions} || $hash->{action};
+            %raw_attributes = ((exists $a->{'*'} ? %{$a->{'*'}} : ()),
+                               %raw_attributes,
+                               (exists $a->{$name} ? %{$a->{$name}} : ()));
+        }
+
+        my %final_attributes;
+
+        foreach my $key (keys %raw_attributes) {
+
+            my $raw = $raw_attributes{$key};
+
+            foreach my $value (ref($raw) eq 'ARRAY' ? @$raw : $raw) {
+
+                my $meth = "_parse_${key}_attr";
+                my %new_attributes;
+                if ( $self->can($meth) ) {
+                    %new_attributes = $self->$meth( $c, $name, $value );
+                }
+                push( @{ $final_attributes{$_} }, $new_attributes{$_} )
+                  for keys %new_attributes;
+            }
+        }
+
+        return \%final_attributes;
     }
 
 
@@ -123,7 +149,10 @@
             push @{$self->rpc_endpoint_paths}, $path
               unless grep { $_ eq $path }
                 @{$self->rpc_endpoint_paths};
-            return $self->_parse_SOAP_attr($c, $name, $style.$use)
+            return
+              (
+               $self->_parse_SOAP_attr($c, $name, $style.$use),
+              );
         }
     }
 
@@ -138,7 +167,7 @@
             my $action = $self->create_action
               (
                name => '___base_rpc_endpoint',
-               code => sub { },
+               code => sub {  },
                reverse => ($namespace ? $namespace.'/' : '') . '___base_rpc_endpoint',
                namespace => $namespace,
                class => (ref $self || $self),
@@ -171,50 +200,57 @@
             my $portop = $operation->portOperation();
             $c->log->debug("SOAP: @{[$operation->name]} $portop->{input}{message} $portop->{output}{message}");
 
-            my $input_parts = $self->wsdlobj->find(message => $portop->{input}{message})
-              ->{part};
-            for (@{$input_parts}) {
-                my $type = $_->{type} ? $_->{type} : $_->{element};
-                $c->log->debug("SOAP: @{[$operation->name]} input part $_->{name}, type $type");
-                $_->{compiled_reader} = $self->wsdlobj->schemas->compile
-                  (READER => $type,
-                   %$reader_opts);
-            };
+            if ($portop->{input}{message}) {
 
-            $self->decoders({}) unless $self->decoders();
-            $self->decoders->{$name} = sub {
-                my $body = shift;
-                my @nodes = grep { UNIVERSAL::isa($_, 'XML::LibXML::Element') } $body->childNodes();
-                return
-                  {
-                   map {
-                       my $data = $_->{compiled_reader}->(shift @nodes);
-                       $_->{name} => $data;
-                   } @{$input_parts}
-                  }, @nodes;
-            };
+                my $input_parts = $self->wsdlobj->find(message => $portop->{input}{message})
+                  ->{part};
+                for (@{$input_parts}) {
+                    my $type = $_->{type} ? $_->{type} : $_->{element};
+                    $c->log->debug("SOAP: @{[$operation->name]} input part $_->{name}, type $type");
+                    $_->{compiled_reader} = $self->wsdlobj->schemas->compile
+                      (READER => $type,
+                       %$reader_opts);
+                };
 
-            my $output_parts = $self->wsdlobj->find(message => $portop->{output}{message})
-              ->{part};
-            for (@{$output_parts}) {
-                my $type = $_->{type} ? $_->{type} : $_->{element};
-                $c->log->debug("SOAP: @{[$operation->name]} out part $_->{name}, type $type");
-                $_->{compiled_writer} = $self->wsdlobj->schemas->compile
-                  (WRITER => $_->{type} ? $_->{type} : $_->{element},
-                   elements_qualified => 'ALL',
-                   %$writer_opts);
+                $self->decoders({}) unless $self->decoders();
+                $self->decoders->{$name} = sub {
+                    my $body = shift;
+                    my @nodes = grep { UNIVERSAL::isa($_, 'XML::LibXML::Element') } $body->childNodes();
+                    return
+                      {
+                       map {
+                           my $data = $_->{compiled_reader}->(shift @nodes);
+                           $_->{name} => $data;
+                       } @{$input_parts}
+                      }, @nodes;
+                };
             }
 
-            $self->encoders({}) unless $self->encoders();
-            $self->encoders->{$name} = sub {
-                my ($doc, $data) = @_;
-                return
-                  [
-                   map {
-                       $_->{compiled_writer}->($doc, $data->{$_->{name}})
-                   } @{$output_parts}
-                  ];
-            };
+            if ($portop->{output}{message}) {
+
+                my $output_parts = $self->wsdlobj->find(message => $portop->{output}{message})
+                  ->{part};
+                for (@{$output_parts}) {
+                    my $type = $_->{type} ? $_->{type} : $_->{element};
+                    $c->log->debug("SOAP: @{[$operation->name]} out part $_->{name}, type $type");
+                    $_->{compiled_writer} = $self->wsdlobj->schemas->compile
+                      (WRITER => $_->{type} ? $_->{type} : $_->{element},
+                       elements_qualified => 'ALL',
+                       %$writer_opts);
+                }
+
+                $self->encoders({}) unless $self->encoders();
+                $self->encoders->{$name} = sub {
+                    my ($doc, $data) = @_;
+                    return
+                      [
+                       map {
+                           $_->{compiled_writer}->($doc, $data->{$_->{name}})
+                       } @{$output_parts}
+                      ];
+                };
+
+            }
         }
 
         my $actionclass = ($value =~ /^\+/ ? $value :
@@ -230,13 +266,14 @@
         my ($self, $c) = (shift, shift);
         my $soap = $c->stash->{soap};
 
-        return $self->NEXT::end($c, @_) unless $soap;
+        return $self->maybe::next::method($c, @_) unless $soap;
 
         if (scalar @{$c->error}) {
             $c->stash->{soap}->fault
               ({ code => 'Client',
                  reason => 'Unexpected Error', detail =>
-                 'Unexpected error in the application: '.(join "\n", @{$c->error} ).'!'});
+                 'Unexpected error in the application: '.(join "\n", @{$c->error} ).'!'})
+                unless $c->stash->{soap}->fault;
             $c->error(0);
         }
 
@@ -244,24 +281,24 @@
         my $response = XML::LibXML->createDocument('1.0','UTF8');
 
         my $envelope = $response->createElementNS
-          ($namespace,"SOAPENV:Envelope");
+          ($namespace,"Envelope");
 
         $response->setDocumentElement($envelope);
 
         # TODO: we don't support header generation in response yet.
 
         my $body = $response->createElementNS
-          ($namespace,"SOAPENV:Body");
+          ($namespace,"Body");
 
         $envelope->appendChild($body);
 
         if ($soap->fault) {
             my $fault = $response->createElementNS
-              ($namespace, "SOAPENV:Fault");
+              ($namespace, "Fault");
             $body->appendChild($fault);
 
             my $code = $response->createElementNS
-              ($namespace, "SOAPENV:faultcode");
+              ($namespace, "faultcode");
             $fault->appendChild($code);
             my $codestr = $soap->fault->{code};
             if (my ($ns, $val) = $codestr =~ m/^\{(.+)\}(.+)$/) {
@@ -272,22 +309,22 @@
                     $code->appendText($val);
                 }
             } else {
-                $code->appendText('SOAPENV:'.$codestr);
+                $code->appendText($codestr);
             }
 
             my $faultstring = $response->createElementNS
-              ($namespace, "SOAPENV:faultstring");
+              ($namespace, "faultstring");
             $fault->appendChild($faultstring);
             $faultstring->appendText($soap->fault->{reason});
 
             if (UNIVERSAL::isa($soap->fault->{detail}, 'XML::LibXML::Node')) {
                 my $detail = $response->createElementNS
-                  ($namespace, "SOAPENV:detail");
+                  ($namespace, "detail");
                 $detail->appendChild($soap->fault->{detail});
                 $fault->appendChild($detail);
             } elsif ($soap->fault->{detail}) {
                 my $detail = $response->createElementNS
-                  ($namespace, "SOAPENV:detail");
+                  ($namespace, "detail");
                 $fault->appendChild($detail);
                 # TODO: we don't support the xml:lang attribute yet.
                 my $text = $response->createElementNS
