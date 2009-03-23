@@ -4,13 +4,14 @@
     use base qw/Catalyst::Controller/;
     use XML::LibXML;
     use XML::Compile::WSDL11;
+    use XML::Compile::SOAP11;
     use UNIVERSAL qw(isa);
     use Class::C3;
 
     use constant NS_SOAP_ENV => "http://schemas.xmlsoap.org/soap/envelope/";
     use constant NS_WSDLSOAP => "http://schemas.xmlsoap.org/wsdl/soap/";
 
-    our $VERSION = '1.10';
+    our $VERSION = '1.11';
 
     __PACKAGE__->mk_accessors qw(wsdl wsdlobj decoders encoders
          ports wsdlservice xml_compile soap_action_prefix rpc_endpoint_paths);
@@ -83,24 +84,30 @@
 
                 if (ref $wsdlfile eq 'ARRAY') {
                     my $main = shift @{$wsdlfile};
-                    $c->log->debug("WSDL: adding main WSDL $main");
+                    $c->log->debug("WSDL: adding main WSDL $main")
+                      if $c->debug;
                     $self->wsdlobj(XML::Compile::WSDL11->new($main));
                     foreach my $file (@{$wsdlfile}) {
-                        $c->log->debug("WSDL: adding additional WSDL $file");
+                        $c->log->debug("WSDL: adding additional WSDL $file")
+                          if $c->debug;
                         $self->wsdlobj->addWSDL($file);
                     }
-                } else {
-                    $c->log->debug("WSDL: adding WSDL $wsdlfile");
-                    $self->wsdlobj(XML::Compile::WSDL11->new($wsdlfile));
+                }
+                else {
+                      $c->log->debug("WSDL: adding WSDL $wsdlfile")
+                        if $c->debug;
+                      $self->wsdlobj(XML::Compile::WSDL11->new($wsdlfile));
                 }
 
                 if (ref $schema eq 'ARRAY') {
                     foreach my $file (@$schema) {
-                        $c->log->debug("WSDL: Import schema $file");
+                        $c->log->debug("WSDL: Import schema $file")
+                          if $c->debug;
                         $self->wsdlobj->importDefinitions($file);
                     }
-                } elsif ($schema) {
-                    $c->log->debug("WSDL: Import schema $schema");
+                }
+                elsif ($schema) {
+                    $c->log->debug("WSDL: Import schema $schema") if $c->debug;
                     $self->wsdlobj->importDefinitions($schema)
                 }
             }
@@ -123,19 +130,17 @@
           or die 'Every operation should be on the WSDL when using one.';
 
         # TODO: Use more intelligence when selecting the address.
-        my ($path) = $operation->endPointAddresses();
+        my ($path) = $operation->endPoints;
 
         $path =~ s#^[^:]+://[^/]+##;
 
-        # Finding out the style and input body use for this operation
-        my $binding = $self->wsdlobj->find(binding => $operation->port->{binding});
-        my $style = $binding->{'{'.NS_WSDLSOAP.'}binding'}[0]->getAttribute('style');
-        my ($use) = map { $_->{input}{'{'.NS_WSDLSOAP.'}body'}[0]->getAttribute('use') }
-          grep { $_->{name} eq $name } @{ $binding->{operation} || [] };
+        my $style = $operation->style;
+        my $use = $operation->{input_def}->{body}->{use};
 
         $style = $style =~ /document/i ? 'Document' : 'RPC';
         $use = $use =~ /literal/i ? 'Literal' : 'Encoded';
-        $c->log->debug("WSDLPort: [$name] [$value] [$path] [$style] [$use]");
+        $c->log->debug("WSDLPort: [$name] [$value] [$path] [$style] [$use]")
+          if $c->debug;
 
         if ($style eq 'Document') {
             return
@@ -197,17 +202,22 @@
                                                       port => $self->ports->{$name},
                                                       service => $wsdlservice)
               or die 'Every operation should be on the WSDL when using one.';
-            my $portop = $operation->portOperation();
-            $c->log->debug("SOAP: @{[$operation->name]} $portop->{input}{message} $portop->{output}{message}");
+            
+            my $in_message = $operation->{input_def}->{body}->{message};
+            my $out_message = $operation->{output_def}->{body}->{message};
 
-            if ($portop->{input}{message}) {
+            $c->log->debug("SOAP: ".$operation->name." $in_message $out_message")
+              if $c->debug;
 
-                my $input_parts = $self->wsdlobj->find(message => $portop->{input}{message})
-                  ->{part};
+            if ($in_message) {
+                my $input_parts = $self->wsdlobj->findDef(message => $in_message)
+                  ->{wsdl_part};
+                  
                 for (@{$input_parts}) {
                     my $type = $_->{type} ? $_->{type} : $_->{element};
-                    $c->log->debug("SOAP: @{[$operation->name]} input part $_->{name}, type $type");
-                    $_->{compiled_reader} = $self->wsdlobj->schemas->compile
+                    $c->log->debug("SOAP: @{[$operation->name]} input part $_->{name}, type $type")
+                      if $c->debug;
+                    $_->{compiled_reader} = $self->wsdlobj->compile
                       (READER => $type,
                        %$reader_opts);
                 };
@@ -226,14 +236,15 @@
                 };
             }
 
-            if ($portop->{output}{message}) {
+            if ($out_message) {
 
-                my $output_parts = $self->wsdlobj->find(message => $portop->{output}{message})
-                  ->{part};
+                my $output_parts = $self->wsdlobj->findDef(message => $out_message)
+                  ->{wsdl_part};
                 for (@{$output_parts}) {
                     my $type = $_->{type} ? $_->{type} : $_->{element};
-                    $c->log->debug("SOAP: @{[$operation->name]} out part $_->{name}, type $type");
-                    $_->{compiled_writer} = $self->wsdlobj->schemas->compile
+                    $c->log->debug("SOAP: @{[$operation->name]} out part $_->{name}, type $type")
+                      if $c->debug;
+                    $_->{compiled_writer} = $self->wsdlobj->compile
                       (WRITER => $_->{type} ? $_->{type} : $_->{element},
                        elements_qualified => 'ALL',
                        %$writer_opts);
@@ -270,7 +281,7 @@
 
         if (scalar @{$c->error}) {
             $c->stash->{soap}->fault
-              ({ code => 'Client',
+              ({ code => '{'.NS_SOAP_ENV.'}Client',
                  reason => 'Unexpected Error', detail =>
                  'Unexpected error in the application: '.(join "\n", @{$c->error} ).'!'})
                 unless $c->stash->{soap}->fault;
@@ -280,25 +291,24 @@
         my $namespace = $soap->namespace || NS_SOAP_ENV;
         my $response = XML::LibXML->createDocument('1.0','UTF8');
 
-        my $envelope = $response->createElementNS
-          ($namespace,"Envelope");
-
-        $response->setDocumentElement($envelope);
-
-        # TODO: we don't support header generation in response yet.
-
-        my $body = $response->createElementNS
-          ($namespace,"Body");
-
-        $envelope->appendChild($body);
+        my $envelope;
 
         if ($soap->fault) {
-            my $fault = $response->createElementNS
-              ($namespace, "Fault");
+            
+            $envelope = $response->createElement("SOAP-ENV:Envelope");
+            my $nsattr = XML::LibXML::Attr->new('xmlns:SOAP-ENV', NS_SOAP_ENV);
+            $envelope->addChild($nsattr);
+            
+            $response->setDocumentElement($envelope);
+
+            my $body = $response->createElement("SOAP-ENV:Body");
+
+            $envelope->appendChild($body);
+
+            my $fault = $response->createElement("SOAP-ENV:Fault");
             $body->appendChild($fault);
 
-            my $code = $response->createElementNS
-              ($namespace, "faultcode");
+            my $code = $response->createElement("faultcode");
             $fault->appendChild($code);
             my $codestr = $soap->fault->{code};
             if (my ($ns, $val) = $codestr =~ m/^\{(.+)\}(.+)$/) {
@@ -312,19 +322,16 @@
                 $code->appendText($codestr);
             }
 
-            my $faultstring = $response->createElementNS
-              ($namespace, "faultstring");
+            my $faultstring = $response->createElement("faultstring");
             $fault->appendChild($faultstring);
             $faultstring->appendText($soap->fault->{reason});
 
             if (UNIVERSAL::isa($soap->fault->{detail}, 'XML::LibXML::Node')) {
-                my $detail = $response->createElementNS
-                  ($namespace, "detail");
+                my $detail = $response->createElement("detail");
                 $detail->appendChild($soap->fault->{detail});
                 $fault->appendChild($detail);
             } elsif ($soap->fault->{detail}) {
-                my $detail = $response->createElementNS
-                  ($namespace, "detail");
+                my $detail = $response->createElement("detail");
                 $fault->appendChild($detail);
                 # TODO: we don't support the xml:lang attribute yet.
                 my $text = $response->createElementNS
@@ -333,6 +340,15 @@
                 $text->appendText($soap->fault->{detail});
             }
         } else {
+            $envelope = $response->createElementNS($namespace, "Envelope");
+
+            $response->setDocumentElement($envelope);
+
+            # TODO: we don't support header generation in response yet.
+
+            my $body = $response->createElementNS($namespace, "Body");
+
+            $envelope->appendChild($body);        
             if ($soap->string_return) {
                 $body->appendText($soap->string_return);
             } elsif (my $lit = $soap->literal_return) {
@@ -352,7 +368,8 @@
             }
         }
 
-        $c->log->debug("Outgoing XML: ".$envelope->toString());
+        $c->res->status(500) if $soap->fault;
+        $c->log->debug("Outgoing XML: ".$envelope->toString()) if $c->debug;
         $c->res->content_type('text/xml');
         $c->res->body($envelope->toString());
     }
@@ -619,9 +636,11 @@ L<XML::Compile::Schema>
 
 =head1 AUTHORS
 
-Daniel Ruoso C<daniel.ruoso@verticalone.pt>
+Daniel Ruoso C<daniel@ruoso.com>
 
 Drew Taylor C<drew@drewtaylor.com>
+
+Georg Oechsler C<goe-cpan@space.net>
 
 =head1 BUG REPORTS
 
