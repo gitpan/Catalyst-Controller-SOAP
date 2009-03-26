@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                Catalyst-Controller-SOAP
-version:             1.12
+version:             1.13
 abstract:            Catalyst SOAP Controller
 license:             ~
 author:              
@@ -10,9 +10,7 @@ distribution_type:   module
 requires:     
     Catalyst::Runtime:             5.7011
     Class::C3:                     0
-    XML::Compile::SOAP:            0
-    XML::Compile::SOAP11:          0
-    XML::Compile::WSDL11:          0
+    XML::Compile::SOAP:            2.03
     XML::LibXML:                   0
 meta-spec:
     url:     http://module-build.sourceforge.net/META-spec-v1.3.html
