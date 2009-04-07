@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                Catalyst-Controller-SOAP
-version:             1.13
+version:             1.14
 abstract:            Catalyst SOAP Controller
 license:             ~
 author:              
