@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                Catalyst-Controller-SOAP
-version:             1.19
+version:             1.20
 abstract:            Catalyst SOAP Controller
 license:             ~
 author:              
@@ -9,7 +9,7 @@ generated_by:        ExtUtils::MakeMaker version 6.42
 distribution_type:   module
 requires:     
     Catalyst::Runtime:             5.7011
-    Class::C3:                     0
+    MRO::Compat:                   0
     XML::Compile::SOAP:            2.03
     XML::LibXML:                   0
 meta-spec:

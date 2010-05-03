@@ -1,13 +1,15 @@
-{ package Catalyst::Action::SOAP::RPCLiteral;
+{ package Catalyst::Action::SOAP::RPCEncoded;
 
   use base qw/Catalyst::Action::SOAP/;
-  use MRO::Compat;
-  use mro 'c3';
+
+  __PACKAGE__->mk_accessors(qw/operations/);
 
   sub execute {
       my $self = shift;
       my ( $controller, $c ) = @_;
-      $self->next::method($controller, $c, $c->stash->{soap}->arguments);
+
+      
+
   }
 };
 
@@ -17,7 +19,7 @@ __END__
 
 =head1 NAME
 
-Catalyst::Action::SOAP::RPCLiteral - RPC style Literal encoding service
+Catalyst::Action::SOAP::RPCEncoded - RPC Encoded service
 
 =head1 SYNOPSIS
 
@@ -25,9 +27,9 @@ Catalyst::Action::SOAP::RPCLiteral - RPC style Literal encoding service
 
 =head1 DESCRIPTION
 
-This class implements the literal encoding dispatch on the service,
-which means that the arguments are passed to the service as a xml
-object in the parameters.
+This class implements the soap encoding dispatch on the service, which
+means that the arguments are passed to the service as an list of the
+parsed arguments.
 
 =head1 TODO
 
