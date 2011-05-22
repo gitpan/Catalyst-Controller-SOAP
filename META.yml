@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               Catalyst-Controller-SOAP
-version:            1.22
+version:            1.23
 abstract:           Catalyst SOAP Controller
 author:
     - Daniel Ruoso <daniel@ruoso.com>
@@ -20,7 +20,7 @@ no_index:
     directory:
         - t
         - inc
-generated_by:       ExtUtils::MakeMaker version 6.54
+generated_by:       ExtUtils::MakeMaker version 6.56
 meta-spec:
     url:      http://module-build.sourceforge.net/META-spec-v1.4.html
     version:  1.4

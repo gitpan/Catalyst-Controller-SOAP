@@ -5,7 +5,6 @@
     use XML::LibXML;
     use XML::Compile::WSDL11;
     use XML::Compile::SOAP11;
-    use UNIVERSAL qw(isa);
     use MRO::Compat;
     use mro 'c3';
     use Encode;
@@ -13,10 +12,11 @@
     use constant NS_SOAP_ENV => "http://schemas.xmlsoap.org/soap/envelope/";
     use constant NS_WSDLSOAP => "http://schemas.xmlsoap.org/wsdl/soap/";
 
-    our $VERSION = '1.22';
+    our $VERSION = '1.23';
 
-    __PACKAGE__->mk_accessors qw(wsdl wsdlobj decoders encoders
-         ports wsdlservice xml_compile soap_action_prefix rpc_endpoint_paths);
+    __PACKAGE__->mk_accessors qw(wsdl wsdlobj decoders encoders ports
+         wsdlservice xml_compile soap_action_prefix rpc_endpoint_paths
+         doclitwrapped_endpoint_paths);
 
     # XXX - This is here as a temporary fix for a bug in _parse_attrs
     # that makes it impossible to return more than one
@@ -70,7 +70,6 @@
         return \%final_attributes;
     }
 
-
     sub __init_wsdlobj {
         my ($self, $c) = @_;
 
@@ -119,7 +118,7 @@
     }
 
     sub _parse_WSDLPort_attr {
-        my ($self, $c, $name, $value) = @_;
+        my ($self, $c, $name, $value, $wrapped) = @_;
 
         die 'Cannot use WSDLPort without WSDL.'
           unless $self->__init_wsdlobj($c);
@@ -143,10 +142,20 @@
         $c->log->debug("WSDLPort: [$name] [$value] [$path] [$style] [$use]")
           if $c->debug;
 
-        if ($style eq 'Document') {
+        if ($style eq 'Document' && !$wrapped) {
             return
               (
                Path => $path,
+               $self->_parse_SOAP_attr($c, $name, $style.$use)
+              );
+	} elsif ($style eq 'Document' && $wrapped) {
+            $self->doclitwrapped_endpoint_paths([]) unless $self->doclitwrapped_endpoint_paths;
+            $path =~ s/\/$//;
+            push @{$self->doclitwrapped_endpoint_paths}, $path
+              unless grep { $_ eq $path }
+                @{$self->doclitwrapped_endpoint_paths};
+            return
+              (
                $self->_parse_SOAP_attr($c, $name, $style.$use)
               );
         } else {
@@ -160,6 +169,13 @@
                $self->_parse_SOAP_attr($c, $name, $style.$use),
               );
         }
+    }
+
+    sub _parse_WSDLPortWrapped_attr {
+        my ($self, $c, $name, $value) = @_;
+	my %attrs = $self->_parse_WSDLPort_attr($c, $name, $value, 'wrapped');
+	delete $attrs{Path};
+	return %attrs;
     }
 
     # Let's create the rpc_endpoint action.
@@ -182,6 +198,22 @@
               );
             $c->dispatcher->register($c, $action);
         }
+
+        if ($self->doclitwrapped_endpoint_paths) {
+            my $namespace = $self->action_namespace($c);
+            my $action = $self->create_action
+              (
+               name => '___base_doclitwrapped_endpoint',
+               code => sub {  },
+               reverse => ($namespace ? $namespace.'/' : '') . '___base_doclitwrapped_endpoint',
+               namespace => $namespace,
+               class => (ref $self || $self),
+               attributes => { ActionClass => [ 'Catalyst::Action::SOAP::DocumentLiteralWrapped' ],
+                               Path => $self->doclitwrapped_endpoint_paths }
+              );
+            $c->dispatcher->register($c, $action);
+        }
+
     }
 
     sub _parse_SOAP_attr {
@@ -601,6 +633,73 @@ to the XML::Compile::Schema::compile() method.
   __PACKAGE__->config->{xml_compile} = {
       reader => {sloppy_integers => 1}, writer => {sloppy_integers => 1},
   };
+
+=head1 Support for Document/Literal-Wrapped
+
+Please make sure you read the documentation at
+L<Catalyst::Action::SOAP::DocumentLiteralWrapped> before using this
+feature.
+
+The support for Document/Literal-Wrapped works by faking RPC style
+even when the WSDL says the service is in the "Document" mode. The
+parameter used for the actual dispatch is the soapAction attribute.
+
+In practice, the endpoint of the action is an empty action that will
+redirect the request to the actual action based on the name of the
+soapAction. It uses the soap_action_prefix controller configuration
+variable to extract the name of the action.
+
+There is an important restriction in that fact. The name of the
+operation in the WSDL must match the suffix of the soapAction
+attribute.
+
+If you have a Document/Literal-Wrapped WSDL and rewriting it as
+RPC/Literal is not an option, take the following steps:
+
+=over
+
+=item Set the soap_action_prefix
+
+It is assumed that all operations in the port have a common prefix, it
+is also assumed that when the prefix is removed, the remaining string
+can be used as a subroutine name (i.e.: it should not contain
+additional slashes).
+
+  __PACKAGE__->config->{soap_action_prefix} = 'http://foo.com/bar/';
+
+=item Make sure the soapAction attribute is consistent with the operation name
+
+Since the dispatching mechanism is dissociated from the
+encoding/decoding process, the only way for this to work is to have
+the soapAction to be consistent with the operation name.
+
+  <!--- inside the WSDL binding section -->
+  <wsdl:operation name="Greet">
+      <soap:operation soapAction="http://foo.com/bar/Greet" />
+      <wsdl:input>
+  ...
+
+Note that the name of the operation is "Greet" and the soapAction
+attribute is the result of concatenating the soap_action_prefix and
+the name of the operation.
+
+=item Implement the action using the WSDLPortWrapped action attribute
+
+Instead of using the standard WSDLPort attribute, use the alternative
+implementation that will provide the extra dispatching.
+
+  sub Greet :WSDLPortWrapped('GreetPort') {
+     ...
+  }
+
+Note that the name of the sub is consistent with the name of the
+operation.
+
+=back
+
+But always try to refactor your WSDL as RPC/Literal instead, which is
+much more predictable and, in fact, is going to provide you a much
+more sane WSDL file.
 
 =head1 USING WSDL AND Catalyst::Test
 
