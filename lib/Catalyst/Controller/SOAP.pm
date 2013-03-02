@@ -1,7 +1,7 @@
 {   package Catalyst::Controller::SOAP;
 
     use strict;
-    use base qw/Catalyst::Controller/;
+    use base 'Catalyst::Controller';
     use XML::LibXML;
     use XML::Compile::WSDL11;
     use XML::Compile::SOAP11;
@@ -12,63 +12,11 @@
     use constant NS_SOAP_ENV => "http://schemas.xmlsoap.org/soap/envelope/";
     use constant NS_WSDLSOAP => "http://schemas.xmlsoap.org/wsdl/soap/";
 
-    our $VERSION = '1.23';
+    our $VERSION = '1.24';
 
-    __PACKAGE__->mk_accessors qw(wsdl wsdlobj decoders encoders ports
+    __PACKAGE__->mk_accessors (qw(wsdl wsdlobj decoders encoders ports
          wsdlservice xml_compile soap_action_prefix rpc_endpoint_paths
-         doclitwrapped_endpoint_paths);
-
-    # XXX - This is here as a temporary fix for a bug in _parse_attrs
-    # that makes it impossible to return more than one
-    # "final_attribute", a patch was already submitted and should make
-    # into the next release.
-    sub _parse_attrs {
-        my ( $self, $c, $name, @attrs ) = @_;
-
-        my %raw_attributes;
-
-        foreach my $attr (@attrs) {
-
-            # Parse out :Foo(bar) into Foo => bar etc (and arrayify)
-
-            if ( my ( $key, $value ) = ( $attr =~ /^(.*?)(?:\(\s*(.+?)\s*\))?$/ ) ) {
-
-                if ( defined $value ) {
-                    ( $value =~ s/^'(.*)'$/$1/ ) || ( $value =~ s/^"(.*)"/$1/ );
-                }
-                push( @{ $raw_attributes{$key} }, $value );
-            }
-        }
-
-        my $hash = (ref $self ? $self : $self->config); # hate app-is-class
-
-        if (exists $hash->{actions} || exists $hash->{action}) {
-            my $a = $hash->{actions} || $hash->{action};
-            %raw_attributes = ((exists $a->{'*'} ? %{$a->{'*'}} : ()),
-                               %raw_attributes,
-                               (exists $a->{$name} ? %{$a->{$name}} : ()));
-        }
-
-        my %final_attributes;
-
-        foreach my $key (keys %raw_attributes) {
-
-            my $raw = $raw_attributes{$key};
-
-            foreach my $value (ref($raw) eq 'ARRAY' ? @$raw : $raw) {
-
-                my $meth = "_parse_${key}_attr";
-                my %new_attributes;
-                if ( $self->can($meth) ) {
-                    %new_attributes = $self->$meth( $c, $name, $value );
-                }
-                push( @{ $final_attributes{$_} }, $new_attributes{$_} )
-                  for keys %new_attributes;
-            }
-        }
-
-        return \%final_attributes;
-    }
+         doclitwrapped_endpoint_paths));
 
     sub __init_wsdlobj {
         my ($self, $c) = @_;
@@ -314,7 +262,7 @@
         }
 
         my $actionclass = ($value =~ /^\+/ ? $value :
-          'Catalyst::Action::SOAP::'.$value);
+          'SOAP::'.$value);
         (
          ActionClass => $actionclass,
         )
@@ -435,7 +383,7 @@
 
 {   package Catalyst::Controller::SOAP::Helper;
 
-    use base qw(Class::Accessor::Fast);
+    use base 'Class::Accessor::Fast';
 
     __PACKAGE__->mk_accessors(qw{envelope parsed_envelope arguments fault namespace
                                  encoded_return literal_return string_return
@@ -712,7 +660,7 @@ option available with $wsdl->compileClient() in your test file.
     # t/soap_message.t
     use XML::Compile::WSDL11;
     use XML::Compile::Transport::SOAPHTTP;
-    use Test::More qw(no_plan);
+    use Test::More 'no_plan';
 
     BEGIN {
         use_ok 'Catalyst::Test', 'MyServer';

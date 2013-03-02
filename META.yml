@@ -1,26 +1,26 @@
---- #YAML:1.0
-name:               Catalyst-Controller-SOAP
-version:            1.23
-abstract:           Catalyst SOAP Controller
+---
+abstract: 'Catalyst SOAP Controller'
 author:
-    - Daniel Ruoso <daniel@ruoso.com>
-license:            unknown
-distribution_type:  module
-configure_requires:
-    ExtUtils::MakeMaker:  0
+  - 'Daniel Ruoso <daniel@ruoso.com>'
 build_requires:
-    ExtUtils::MakeMaker:  0
-requires:
-    Catalyst::Runtime:   5.7011
-    Moose:               0.9
-    MRO::Compat:         0
-    XML::Compile::SOAP:  2.14
-    XML::LibXML:         0
-no_index:
-    directory:
-        - t
-        - inc
-generated_by:       ExtUtils::MakeMaker version 6.56
+  ExtUtils::MakeMaker: 0
+configure_requires:
+  ExtUtils::MakeMaker: 0
+dynamic_config: 1
+generated_by: 'ExtUtils::MakeMaker version 6.6302, CPAN::Meta::Converter version 2.120921'
+license: unknown
 meta-spec:
-    url:      http://module-build.sourceforge.net/META-spec-v1.4.html
-    version:  1.4
+  url: http://module-build.sourceforge.net/META-spec-v1.4.html
+  version: 1.4
+name: Catalyst-Controller-SOAP
+no_index:
+  directory:
+    - t
+    - inc
+requires:
+  Catalyst::Runtime: 5.7011
+  MRO::Compat: 0
+  Moose: 0.9
+  XML::Compile::SOAP: 2.14
+  XML::LibXML: 0
+version: 1.24

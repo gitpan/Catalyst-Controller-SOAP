@@ -43,3 +43,4 @@ t/lib/TestApp2.pm
 t/lib/TestApp2/Controller/WS.pm
 t/type-in-message.t
 t/type-in-message.wsdl
+META.json                                Module JSON meta-data (added by MakeMaker)
