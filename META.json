@@ -4,7 +4,7 @@
       "Daniel Ruoso <daniel@ruoso.com>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.6302, CPAN::Meta::Converter version 2.120921",
+   "generated_by" : "ExtUtils::MakeMaker version 6.62, CPAN::Meta::Converter version 2.112150",
    "license" : [
       "unknown"
    ],
@@ -22,24 +22,24 @@
    "prereqs" : {
       "build" : {
          "requires" : {
-            "ExtUtils::MakeMaker" : "0"
+            "ExtUtils::MakeMaker" : 0
          }
       },
       "configure" : {
          "requires" : {
-            "ExtUtils::MakeMaker" : "0"
+            "ExtUtils::MakeMaker" : 0
          }
       },
       "runtime" : {
          "requires" : {
-            "Catalyst::Runtime" : "5.7011",
-            "MRO::Compat" : "0",
+            "Catalyst::Runtime" : "5.90017",
+            "MRO::Compat" : 0,
             "Moose" : "0.9",
-            "XML::Compile::SOAP" : "2.14",
-            "XML::LibXML" : "0"
+            "XML::Compile::SOAP" : "2.35",
+            "XML::LibXML" : 0
          }
       }
    },
    "release_status" : "stable",
-   "version" : "1.24"
+   "version" : "1.25"
 }
